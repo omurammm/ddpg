@@ -10,11 +10,12 @@ from keras.models import Sequential
 from keras.models import Model
 from keras.layers import Dense, Input, concatenate
 from keras import regularizers
+from keras import backend as K
 import time
 
 KERAS_BACKEND = 'tensorflow'
 
-ENV_NAME = 'Pendulum-v0'  # Environment name
+ENV_NAME = 'MountainCarContinuous-v0'  # Environment name
 num_episodes = 12000
 initial_replay_size = 20000
 batch_size = 64
@@ -26,7 +27,7 @@ train_interval = 1
 
 epsilon_init = 1.0
 epsilon_fin = 0.1
-exploration_steps = 100000
+exploration_steps = 1000000
 gamma = 0.99
 
 tau = 0.001
@@ -38,6 +39,8 @@ class Agent():
         self.env = env
         self.dim_obs = env.observation_space.shape[0]
         self.num_actions = env.action_space.shape[0]
+        self.action_high = env.action_space.high[0]
+        self.action_low = env.action_space.low[0]
         self.epsilon = epsilon_init
         self.epsilon_step = (epsilon_init - epsilon_fin) / exploration_steps
         self.t = 0
@@ -98,34 +101,63 @@ class Agent():
         self.sess.run(self.initialize_q_target)
         self.sess.run(self.initialize_policy_target)
 
+    # Critic Network
     def build_q_network(self, s, action):
         s_input = Input(shape=(self.dim_obs,))
-        dense = Dense(400, activation='relu',kernel_regularizer=regularizers.l2(0.01))(s_input)
+        dense = Dense(400, activation='relu',
+                        kernel_regularizer=regularizers.l2(0.01),
+                        kernel_initializer=self.init_400,
+                        bias_initializer=self.init_400
+                      )(s_input)
         a_input = Input(shape=(self.num_actions,))
         hidden = concatenate([dense, a_input])
-        hidden = Dense(300, activation='relu',kernel_regularizer=regularizers.l2(0.01))(hidden)
-        q_outqut = Dense(1, activation='linear')(hidden)
-        model = Model(inputs=[s_input, a_input], outputs=q_outqut)
-
-        #model = Sequential()
-        #model.add(Dense(32, activation='relu', input_dim=self.dim_obs))
-        #model.add(Dense(32, activation='relu'))
-        #model.add(Dense(self.num_actions, activation='linear'))
-
+        hidden = Dense(300, activation='relu',
+                       kernel_regularizer=regularizers.l2(0.01),
+                       kernel_initializer=self.init_300,
+                       bias_initializer=self.init_300
+        )(hidden)
+        q_output = Dense(1, activation='linear',
+                        kernel_initializer=self.init_final,
+                        bias_initializer=self.init_final
+        )(hidden)
+        model = Model(inputs=[s_input, a_input], outputs=q_output)
 
         q_value = model([s, action])
 
         return q_value, model
 
+    # Actor Network
     def build_policy_network(self, s):
         model = Sequential()
-        model.add(Dense(400, activation='relu', input_dim=self.dim_obs))
-        model.add(Dense(300, activation='relu'))
-        model.add(Dense(self.num_actions, activation='tanh'))
+        model.add(Dense(400, activation='relu',
+                        input_dim=self.dim_obs,
+                        kernel_initializer=self.init_400,
+                        bias_initializer=self.init_400
+        ))
+        model.add(Dense(300, activation='relu',
+                        kernel_initializer=self.init_300,
+                        bias_initializer=self.init_300
+                        ))
+        model.add(Dense(self.num_actions, activation='tanh',
+                        kernel_initializer=self.init_final,
+                        bias_initializer=self.init_final
+        ))
 
         action = model(s)
 
         return action, model
+
+    def init_final(self, shape, dtype=None):
+        return K.random_uniform(shape, minval=-3e-3, maxval=3e-3, dtype=dtype)
+
+    def init_300(self, shape, dtype=None):
+        bound = 1 / (300**0.5)
+        return K.random_uniform(shape, minval=-bound, maxval=bound, dtype=dtype)
+
+    def init_400(self, shape, dtype=None):
+        bound = 1 / (400**0.5)
+        return K.random_uniform(shape, minval=-bound, maxval=bound, dtype=dtype)
+
 
     def build_training_op(self, q_network_weights, policy_network_weights):
         #a = tf.placeholder(tf.int64, [None])
@@ -157,7 +189,7 @@ class Agent():
         action = self.repeated_action
         if self.t % act_interval == 0:
             if self.epsilon >= random.random() or self.t < initial_replay_size:
-                action = [random.uniform(-2,2)]
+                action = [random.uniform(self.action_low,self.action_high)]
             else:
                 action = self.action.eval(feed_dict={self.s: [np.float32(s)]})[0]
             self.repeated_action = action
